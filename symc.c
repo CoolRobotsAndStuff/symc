@@ -1,16 +1,15 @@
-#define CADIGO_IMPLEMENTATION
-#include "../cadigo/src/cadigo.h"
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+#include <math.h>
+
+#define CADIGO_IMPLEMENTATION
+#include "../cadigo/src/cadigo.h"
 
 #define RGFW_IMPLEMENTATION
 #include "RGFW.h"
-#include <math.h>
+
 #define DEG2RAD 3.14/180.0
-
-
 
 static inline void cad_viz_glPerspective(double fovY, double aspect, double zNear, double zFar) {
     const double f = 1 / (cos(fovY) * sin(fovY));
@@ -26,23 +25,24 @@ static inline void cad_viz_glPerspective(double fovY, double aspect, double zNea
 }
 
 
-#define PLANET_RES 2
-#define PLANET_COUNT 500
+#define FAR_PLANET_RES 1
+#define NEAR_PLANET_RES 2
+#define LOD_LIMIT 500
+#define PLANET_COUNT 3000
 
-#define MAX_X 500.0L
-#define MAX_Y 500.0L
-#define MAX_Z 100.0L
+#define MAX_X 2000.0L
+#define MAX_Y 2000.0L
+#define MAX_Z 2000.0L
 
 #define MAX_RADIOUS 10.0L
 
-#define MAX_DENSITY 200000000
+#define MAX_DENSITY 2000000000
 #define MIN_DENSITY 10
 
-#define MAX_VELOCITY 0.007
+#define MAX_VELOCITY 0.01
 
 #define randval() ((val_t)rand()/(val_t)RAND_MAX)
 
-#include <math.h>
 
 typedef struct {
     bool active;
@@ -56,15 +56,18 @@ typedef struct {
 
 #define G 6.67430e-11 
 
-#define CAM_VELOCITY 1
+#define CAM_VELOCITY 0.1
 
 int main() {
     srand(22389238);
 
     Planet planets[PLANET_COUNT];
 
-    CAD base_planet = cad_cube(1);
-    for (int i = 0; i < PLANET_RES; ++i) cad_catmull_clark(&base_planet);
+    CAD near_base_planet = cad_cube(1);
+    for (int i = 0; i < NEAR_PLANET_RES; ++i) cad_catmull_clark(&near_base_planet);
+
+    CAD far_base_planet = cad_cube(1);
+    for (int i = 0; i < FAR_PLANET_RES; ++i) cad_catmull_clark(&far_base_planet);
 
     val_t radious = randval() * MAX_RADIOUS;
     val_t density = (MAX_DENSITY-MIN_DENSITY) * randval() +  MIN_DENSITY;
@@ -105,6 +108,8 @@ int main() {
     glLoadIdentity();
     cad_viz_glPerspective(60, 16.0 / 9.0, 1, 1000000);
     glMatrixMode(GL_MODELVIEW);
+
+    CAD obj = cad_clone(near_base_planet);
 
     val_t fps;
     val_t time_warping = 1000;
@@ -152,30 +157,30 @@ int main() {
         }
 
         if (RGFW_isPressed(win, RGFW_w)) {
-            camX += cos((yaw + 90) * DEG2RAD)*CAM_VELOCITY;
-            camZ -= sin((yaw + 90) * DEG2RAD)*CAM_VELOCITY;
+            camX += cos((yaw + 90) * DEG2RAD)*CAM_VELOCITY*dt;
+            camZ -= sin((yaw + 90) * DEG2RAD)*CAM_VELOCITY*dt;
         }
         if (RGFW_isPressed(win, RGFW_s)) {
-            camX += cos((yaw + 270) * DEG2RAD)*CAM_VELOCITY;
-            camZ -= sin((yaw + 270) * DEG2RAD)*CAM_VELOCITY;
+            camX += cos((yaw + 270) * DEG2RAD)*CAM_VELOCITY*dt;
+            camZ -= sin((yaw + 270) * DEG2RAD)*CAM_VELOCITY*dt;
         }
         if (RGFW_isPressed(win, RGFW_a)) {
-            camX += cos(yaw * DEG2RAD)*CAM_VELOCITY;
-            camZ -= sin(yaw * DEG2RAD)*CAM_VELOCITY;
+            camX += cos(yaw * DEG2RAD)*CAM_VELOCITY*dt;
+            camZ -= sin(yaw * DEG2RAD)*CAM_VELOCITY*dt;
         }
         if (RGFW_isPressed(win, RGFW_d)) {
-            camX += cos((yaw + 180) * DEG2RAD)*CAM_VELOCITY;
-            camZ -= sin((yaw + 180) * DEG2RAD)*CAM_VELOCITY;
+            camX += cos((yaw + 180) * DEG2RAD)*CAM_VELOCITY*dt;
+            camZ -= sin((yaw + 180) * DEG2RAD)*CAM_VELOCITY*dt;
         }
 
-        if (RGFW_isPressed(win, RGFW_space))  camY -= CAM_VELOCITY;
-        if (RGFW_isPressed(win, RGFW_shiftL)) camY += CAM_VELOCITY;
+        if (RGFW_isPressed(win, RGFW_space))  camY -= CAM_VELOCITY*dt;
+        if (RGFW_isPressed(win, RGFW_shiftL)) camY += CAM_VELOCITY*dt;
         
-        float rot_sensitivity = 1;
-        if (RGFW_isPressed(win, RGFW_h)) yaw   -= rot_sensitivity;
-        if (RGFW_isPressed(win, RGFW_l)) yaw   += rot_sensitivity;
-        if (RGFW_isPressed(win, RGFW_j)) pitch += rot_sensitivity;
-        if (RGFW_isPressed(win, RGFW_k)) pitch -= rot_sensitivity;
+        float rot_sensitivity = 0.03;
+        if (RGFW_isPressed(win, RGFW_h)) yaw   -= rot_sensitivity*dt;
+        if (RGFW_isPressed(win, RGFW_l)) yaw   += rot_sensitivity*dt;
+        if (RGFW_isPressed(win, RGFW_j)) pitch += rot_sensitivity*dt;
+        if (RGFW_isPressed(win, RGFW_k)) pitch -= rot_sensitivity*dt;
 
 
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -259,34 +264,44 @@ int main() {
             vec3_add_to(&planets[index].position, vec3_mult_s(planets[index].velocity, (val_t)dt));
         }
 
+
         glViewport(0, 0, win->r.w, win->r.h);
         glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
         for (size_t h = 0; h < PLANET_COUNT; ++h) {
             if (!planets[h].active) continue;
-            CAD obj = cad_clone(base_planet); 
+
+            Vec3 difference = vec3_sub(planets[h].position, vec3(-camX, -camY, camZ));
+
+            val_t square_distance = difference.x * difference.x
+                                  + difference.y * difference.y
+                                  + difference.z * difference.z;
+
+            float distance_to_camera = sqrt(square_distance);
+
+            float ambient_light = 1.5;
+            float brightness = 0.20;
+
+            if (distance_to_camera < LOD_LIMIT) {
+                cad_clone_into(near_base_planet, &obj); 
+            } else {
+                cad_clone_into(far_base_planet, &obj); 
+            }
             cad_scale_s(&obj, planets[h].radious*2);
             cad_translate(&obj, planets[h].position);
+
             for (size_t i = 0; i < obj.faces.count; ++i) {
+
                 Face face = obj.faces.items[i];
                 if (face.count < 3) continue;  // Skip invalid faces
                 Vec3 normal = cad_calculate_face_normal(obj, i);
 
-                Vec3 difference = vec3_sub(planets[h].position, vec3(camX, camY, camZ));
+                float lighting = (normal.z+ambient_light) * brightness * max(1.0-(distance_to_camera*0.0001), 0.2);
 
-                val_t square_distance = difference.x * difference.x
-                                      + difference.y * difference.y
-                                      + difference.z * difference.z;
-
-                float distance = sqrt(square_distance);
-
-                float ambient_light = 1.5;
-                float brightness = 0.20;
-
-                float lighting = (normal.z+ambient_light) * brightness * max(1.0-(distance*0.00001), 0.1);
                 glBegin(GL_POLYGON);
                     glColor3f(planets[h].color.x * lighting,
                               planets[h].color.y * lighting,
                               planets[h].color.z * lighting);
+
 
                     for (size_t j = 0; j < face.count; ++j) {
                         Vec3 v = obj.points.items[face.items[j]];
@@ -294,8 +309,8 @@ int main() {
                     }
                 glEnd();
             }
-            cad_free(obj);
         }
+
 
         RGFW_window_swapBuffers(win);
         fps = RGFW_window_checkFPS(win, 60);

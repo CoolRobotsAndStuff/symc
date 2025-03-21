@@ -1,3 +1,3 @@
 #!/bin/bash
 
-gcc symc.c -o symc -lX11 -lGL -lXrandr -lm -I../cadigo/src && ./symc
+gcc symc.c -o symc -lX11 -lGL -lXrandr -lm -I../cadigo/src -O3 && ./symc
