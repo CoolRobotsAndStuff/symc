@@ -43,6 +43,9 @@ static inline void cad_viz_glPerspective(double fovY, double aspect, double zNea
 
 #define randval() ((val_t)rand()/(val_t)RAND_MAX)
 
+clock_t __perf_start;
+#define PERF_START() __perf_start = clock()
+#define PERF_END(str, scale) printf("Time taken by " str ": %f\n", ((double)(clock() - __perf_start)) / CLOCKS_PER_SEC * (scale))
 
 typedef struct {
     bool active;
@@ -96,7 +99,7 @@ int main() {
     // rendering:
 
     float pitch=31.0, yaw=230.0;
-    float camX=-200, camZ=-100, camY=-200;
+    float camX=-1000, camZ=500, camY=-1000;
 
     RGFW_window* win = RGFW_createWindow("Cadigo Visualizer", RGFW_RECT(0, 0, 800, 450), RGFW_windowCenter | RGFW_windowNoResize );
 
@@ -114,6 +117,7 @@ int main() {
     val_t fps;
     val_t time_warping = 1000;
     val_t dt = 1/60 * time_warping;
+
 
     RGFW_window_mouseHold(win, RGFW_AREA(win->r.w / 2, win->r.h / 2));    
     while (RGFW_window_shouldClose(win) == 0) {
@@ -177,6 +181,7 @@ int main() {
         if (RGFW_isPressed(win, RGFW_shiftL)) camY += CAM_VELOCITY*dt;
         
         float rot_sensitivity = 0.03;
+
         if (RGFW_isPressed(win, RGFW_h)) yaw   -= rot_sensitivity*dt;
         if (RGFW_isPressed(win, RGFW_l)) yaw   += rot_sensitivity*dt;
         if (RGFW_isPressed(win, RGFW_j)) pitch += rot_sensitivity*dt;
@@ -193,19 +198,19 @@ int main() {
         glRotatef(yaw  , 0.0, 1.0, 0.0); 
         glTranslatef(camX, camY, -camZ);
 
-
+        
         // Update planets
         for (size_t index = 0; index < PLANET_COUNT; ++index) {
             if (!planets[index].active) continue;
             Planet* planet = &planets[index];
 
             Vec3 total_force = vec3(0, 0, 0);
+
             for (size_t other_index = 0; other_index < PLANET_COUNT; ++other_index) {
                 Planet* other_planet = &planets[other_index];
+
                 if (other_index == index) continue;
                 if (!other_planet->active) continue;
-
-                Vec3 force = vec3(0, 0, 0);
 
                 Vec3 difference = vec3_sub(other_planet->position, planet->position);
 
@@ -214,6 +219,7 @@ int main() {
                                       + difference.z * difference.z;
 
                 val_t distance = sqrt(square_distance);
+
 
                 //printf("%LF\n", distance);
                 
@@ -243,17 +249,19 @@ int main() {
                     continue;
                 }
 
-                if (square_distance == 0.0L) continue;
+                //if (square_distance == 0.0L) continue;
 
                 val_t magnitude = G * (planet->mass * other_planet->mass) / square_distance;
 
 
-                Vec3 gravitational_force = vec3(magnitude * difference.x / distance,
-                                                magnitude * difference.y / distance,
-                                                magnitude * difference.z / distance);
+                Vec3 gravitational_force = vec3(magnitude * (difference.x / distance),
+                                                magnitude * (difference.y / distance),
+                                                magnitude * (difference.z / distance));
 
                 vec3_add_to(&total_force, gravitational_force);
+
             }
+
             vec3_div_by_s(&total_force, PLANET_COUNT);
 
             Vec3 acceleration = vec3_div_s(total_force, planets[index].mass);
@@ -263,7 +271,6 @@ int main() {
 
             vec3_add_to(&planets[index].position, vec3_mult_s(planets[index].velocity, (val_t)dt));
         }
-
 
         glViewport(0, 0, win->r.w, win->r.h);
         glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
@@ -311,8 +318,9 @@ int main() {
             }
         }
 
-
         RGFW_window_swapBuffers(win);
+
+
         fps = RGFW_window_checkFPS(win, 60);
         if (fps > 0) dt = (1/fps) * time_warping; 
     }
