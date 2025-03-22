@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <time.h>
 #include <math.h>
+#include <pthread.h>
 
 #define CADIGO_IMPLEMENTATION
 #include "../cadigo/src/cadigo.h"
@@ -24,11 +25,11 @@ static inline void cad_viz_glPerspective(double fovY, double aspect, double zNea
     glMultMatrixf(projectionMatrix);
 }
 
-
+#define CORE_N 3
 #define FAR_PLANET_RES 1
 #define NEAR_PLANET_RES 2
 #define LOD_LIMIT 500
-#define PLANET_COUNT 3000
+#define PLANET_COUNT 10000
 
 #define MAX_X 2000.0L
 #define MAX_Y 2000.0L
@@ -61,10 +62,79 @@ typedef struct {
 
 #define CAM_VELOCITY 0.1
 
-int main() {
-    srand(22389238);
+val_t dt; // = 1/60 * time_warping;
 
-    Planet planets[PLANET_COUNT];
+Planet working_planets[PLANET_COUNT];
+Planet ref_planets[PLANET_COUNT];
+
+typedef struct {
+    int from;
+    int to;
+} PlanetsThreadData;
+
+pthread_barrier_t end_barrier;
+
+pthread_cond_t  calced_collisions       = PTHREAD_COND_INITIALIZER;
+pthread_mutex_t calced_collisions_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+void* planets_thread(void* arg) {
+    PlanetsThreadData data = *(PlanetsThreadData*)arg;
+    printf("Processing from %d to %d\n", data.from, data.to);
+
+    // Gravity
+    while(true) {
+        for (size_t index = data.from; index < data.to; ++index) {
+            if (!working_planets[index].active) continue;
+            Planet* planet = &working_planets[index];
+
+            Vec3 total_force = vec3(0, 0, 0);
+
+            for (size_t other_index = 0; other_index < PLANET_COUNT; ++other_index) {
+                Planet* other_planet = &ref_planets[other_index];
+
+                if (other_index == index) continue;
+                if (!other_planet->active) continue;
+
+                Vec3 difference = vec3_sub(other_planet->position, planet->position);
+
+                val_t square_distance = difference.x * difference.x
+                                    + difference.y * difference.y
+                                    + difference.z * difference.z;
+
+                val_t distance = sqrt(square_distance);
+                val_t magnitude = G * (planet->mass * other_planet->mass) / square_distance;
+
+                Vec3 gravitational_force = vec3(magnitude * (difference.x / distance),
+                                                magnitude * (difference.y / distance),
+                                                magnitude * (difference.z / distance));
+
+                vec3_add_to(&total_force, gravitational_force);
+            }
+
+            vec3_div_by_s(&total_force, PLANET_COUNT);
+
+            Vec3 acceleration = vec3_div_s(total_force, working_planets[index].mass);
+            vec3_mult_by_s(&acceleration, (val_t)dt);
+            vec3_add_to(&working_planets[index].velocity, acceleration);
+            vec3_add_to(&working_planets[index].position, vec3_mult_s(working_planets[index].velocity, (val_t)dt));
+        }
+        pthread_barrier_wait(&end_barrier);
+        pthread_mutex_lock(&calced_collisions_mutex);
+            pthread_cond_wait(&calced_collisions, &calced_collisions_mutex);
+        pthread_mutex_unlock(&calced_collisions_mutex);
+    }
+    return NULL;
+}
+
+pthread_t threads[CORE_N];
+
+int main() {
+    // Init planets
+    val_t fps;
+    val_t time_warping = 1000;
+    dt = 1/60 * time_warping;
+    
+    srand(22389238);
 
     CAD near_base_planet = cad_cube(1);
     for (int i = 0; i < NEAR_PLANET_RES; ++i) cad_catmull_clark(&near_base_planet);
@@ -76,28 +146,53 @@ int main() {
     val_t density = (MAX_DENSITY-MIN_DENSITY) * randval() +  MIN_DENSITY;
     
     for (int i = 0; i < PLANET_COUNT; ++i) {
-        planets[i].active = true;
-        planets[i].position.x = randval() * MAX_X;
-        planets[i].position.y = randval() * MAX_Y;
-        planets[i].position.z = randval() * MAX_Z;
+        working_planets[i].active = true;
+        working_planets[i].position.x = randval() * MAX_X;
+        working_planets[i].position.y = randval() * MAX_Y;
+        working_planets[i].position.z = randval() * MAX_Z;
 
-        planets[i].velocity.x = (randval()-0.5L)*2*MAX_VELOCITY;
-        planets[i].velocity.y = (randval()-0.5L)*2*MAX_VELOCITY;
-        planets[i].velocity.z = (randval()-0.5L)*2*MAX_VELOCITY;
+        working_planets[i].velocity.x = (randval()-0.5L)*2*MAX_VELOCITY;
+        working_planets[i].velocity.y = (randval()-0.5L)*2*MAX_VELOCITY;
+        working_planets[i].velocity.z = (randval()-0.5L)*2*MAX_VELOCITY;
 
-        planets[i].acceleration = vec3(0, 0, 0);
+        working_planets[i].acceleration = vec3(0, 0, 0);
 
-        planets[i].color.x = randval();
-        planets[i].color.y = randval();
-        planets[i].color.z = randval();
+        working_planets[i].color.x = randval();
+        working_planets[i].color.y = randval();
+        working_planets[i].color.z = randval();
 
-        planets[i].radious = radious;
+        working_planets[i].radious = radious;
 
-        planets[i].mass = radious * density;
+        working_planets[i].mass = radious * density;
     }
 
-    // rendering:
+    memcpy(ref_planets, working_planets, PLANET_COUNT*sizeof(Planet));
 
+    CAD obj = cad_clone(near_base_planet);
+    
+    // Threading
+    pthread_barrier_init(&end_barrier, NULL, CORE_N+1);
+
+    int step      = (PLANET_COUNT/CORE_N);
+    int remainder = (PLANET_COUNT%CORE_N);
+
+    for (int i = 0; i < CORE_N; ++i) {
+        PlanetsThreadData* data = malloc(sizeof(PlanetsThreadData));
+        data->from = i * step;
+        if (i == CORE_N-1 && remainder != 0) {
+            data->to = data->from + remainder;
+        } else {
+            data->to = data->from + step;
+        } 
+        if (pthread_create(&threads[i], NULL, planets_thread, data) != 0) {
+            perror("Failed to create thread");
+            return 1;
+        }
+    }
+    // End threading
+
+
+    // Init rendering:
     float pitch=31.0, yaw=230.0;
     float camX=-1000, camZ=500, camY=-1000;
 
@@ -112,11 +207,6 @@ int main() {
     cad_viz_glPerspective(60, 16.0 / 9.0, 1, 1000000);
     glMatrixMode(GL_MODELVIEW);
 
-    CAD obj = cad_clone(near_base_planet);
-
-    val_t fps;
-    val_t time_warping = 1000;
-    val_t dt = 1/60 * time_warping;
 
 
     RGFW_window_mouseHold(win, RGFW_AREA(win->r.w / 2, win->r.h / 2));    
@@ -198,16 +288,16 @@ int main() {
         glRotatef(yaw  , 0.0, 1.0, 0.0); 
         glTranslatef(camX, camY, -camZ);
 
-        
-        // Update planets
+#if 0  
+        // Gravity
         for (size_t index = 0; index < PLANET_COUNT; ++index) {
-            if (!planets[index].active) continue;
-            Planet* planet = &planets[index];
+            if (!working_planets[index].active) continue;
+            Planet* planet = &working_planets[index];
 
             Vec3 total_force = vec3(0, 0, 0);
 
             for (size_t other_index = 0; other_index < PLANET_COUNT; ++other_index) {
-                Planet* other_planet = &planets[other_index];
+                Planet* other_planet = &ref_planets[other_index];
 
                 if (other_index == index) continue;
                 if (!other_planet->active) continue;
@@ -219,11 +309,46 @@ int main() {
                                       + difference.z * difference.z;
 
                 val_t distance = sqrt(square_distance);
+                val_t magnitude = G * (planet->mass * other_planet->mass) / square_distance;
 
+                Vec3 gravitational_force = vec3(magnitude * (difference.x / distance),
+                                                magnitude * (difference.y / distance),
+                                                magnitude * (difference.z / distance));
 
-                //printf("%LF\n", distance);
+                vec3_add_to(&total_force, gravitational_force);
+            }
+
+            vec3_div_by_s(&total_force, PLANET_COUNT);
+
+            Vec3 acceleration = vec3_div_s(total_force, working_planets[index].mass);
+            vec3_mult_by_s(&acceleration, (val_t)dt);
+            vec3_add_to(&working_planets[index].velocity, acceleration);
+            vec3_add_to(&working_planets[index].position, vec3_mult_s(working_planets[index].velocity, (val_t)dt));
+        }
+#endif 
+        
+        pthread_barrier_wait(&end_barrier);
+
+        // Collisions
+        for (size_t index = 0; index < PLANET_COUNT; ++index) {
+            if (!working_planets[index].active) continue;
+            Planet* planet = &working_planets[index];
+
+            for (size_t other_index = 0; other_index < PLANET_COUNT; ++other_index) {
+                Planet* other_planet = &working_planets[other_index];
+
+                if (other_index == index) continue;
+                if (!other_planet->active) continue;
                 
-                bool planets_collided = distance < (planet->radious + other_planet->radious);
+                Vec3 difference = vec3_sub(other_planet->position, planet->position);
+
+                val_t square_distance = difference.x * difference.x
+                                      + difference.y * difference.y
+                                      + difference.z * difference.z;
+
+                val_t radious_sum = planet->radious + other_planet->radious;
+
+                bool planets_collided = square_distance < (radious_sum*radious_sum);
                 //if (planets_collided) printf("collided\n");
                 //if (!planets_collided) printf("didn't collide\n");
                 if (planets_collided) {
@@ -248,36 +373,22 @@ int main() {
                     planet->radious = max(planet->radious, other_planet->radious);
                     continue;
                 }
-
-                //if (square_distance == 0.0L) continue;
-
-                val_t magnitude = G * (planet->mass * other_planet->mass) / square_distance;
-
-
-                Vec3 gravitational_force = vec3(magnitude * (difference.x / distance),
-                                                magnitude * (difference.y / distance),
-                                                magnitude * (difference.z / distance));
-
-                vec3_add_to(&total_force, gravitational_force);
-
             }
-
-            vec3_div_by_s(&total_force, PLANET_COUNT);
-
-            Vec3 acceleration = vec3_div_s(total_force, planets[index].mass);
-            vec3_mult_by_s(&acceleration, (val_t)dt);
-
-            vec3_add_to(&planets[index].velocity, acceleration);
-
-            vec3_add_to(&planets[index].position, vec3_mult_s(planets[index].velocity, (val_t)dt));
         }
+
+        memcpy(ref_planets, working_planets, PLANET_COUNT*sizeof(Planet));
+
+        pthread_mutex_lock(&calced_collisions_mutex);
+            pthread_cond_broadcast(&calced_collisions);
+        pthread_mutex_unlock(&calced_collisions_mutex);
+
 
         glViewport(0, 0, win->r.w, win->r.h);
         glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
         for (size_t h = 0; h < PLANET_COUNT; ++h) {
-            if (!planets[h].active) continue;
+            if (!ref_planets[h].active) continue;
 
-            Vec3 difference = vec3_sub(planets[h].position, vec3(-camX, -camY, camZ));
+            Vec3 difference = vec3_sub(ref_planets[h].position, vec3(-camX, -camY, camZ));
 
             val_t square_distance = difference.x * difference.x
                                   + difference.y * difference.y
@@ -293,8 +404,8 @@ int main() {
             } else {
                 cad_clone_into(far_base_planet, &obj); 
             }
-            cad_scale_s(&obj, planets[h].radious*2);
-            cad_translate(&obj, planets[h].position);
+            cad_scale_s(&obj, ref_planets[h].radious*2);
+            cad_translate(&obj, ref_planets[h].position);
 
             for (size_t i = 0; i < obj.faces.count; ++i) {
 
@@ -305,9 +416,9 @@ int main() {
                 float lighting = (normal.z+ambient_light) * brightness * max(1.0-(distance_to_camera*0.0001), 0.2);
 
                 glBegin(GL_POLYGON);
-                    glColor3f(planets[h].color.x * lighting,
-                              planets[h].color.y * lighting,
-                              planets[h].color.z * lighting);
+                    glColor3f(ref_planets[h].color.x * lighting,
+                              ref_planets[h].color.y * lighting,
+                              ref_planets[h].color.z * lighting);
 
 
                     for (size_t j = 0; j < face.count; ++j) {
