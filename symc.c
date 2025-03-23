@@ -4,6 +4,8 @@
 #include <math.h>
 #include <pthread.h>
 
+typedef float val_t;
+#define CADIGO_CUSTOM_TYPE
 #define CADIGO_IMPLEMENTATION
 #include "../cadigo/src/cadigo.h"
 
@@ -28,8 +30,8 @@ static inline void cad_viz_glPerspective(double fovY, double aspect, double zNea
 #define CORE_N 6
 #define FAR_PLANET_RES 1
 #define NEAR_PLANET_RES 2
-#define LOD_LIMIT 500
-#define PLANET_COUNT 3000
+#define LOD_LIMIT 800
+#define PLANET_COUNT 5000
 
 #define MAX_X 2000.0L
 #define MAX_Y 2000.0L
@@ -409,8 +411,8 @@ int main() {
 
 
         fps = RGFW_window_checkFPS(win, 60);
-        printf("\033[K");
-        printf("FPS: %Lf\n", fps);
+        //printf("\033[K");
+        printf("FPS: %f\n", fps);
         if (fps > 0) dt = (1/fps) * time_warping; 
     }
 
