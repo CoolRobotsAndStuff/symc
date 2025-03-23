@@ -25,15 +25,15 @@ static inline void cad_viz_glPerspective(double fovY, double aspect, double zNea
     glMultMatrixf(projectionMatrix);
 }
 
-#define CORE_N 3
+#define CORE_N 6
 #define FAR_PLANET_RES 1
 #define NEAR_PLANET_RES 2
 #define LOD_LIMIT 500
-#define PLANET_COUNT 10000
+#define PLANET_COUNT 3000
 
 #define MAX_X 2000.0L
 #define MAX_Y 2000.0L
-#define MAX_Z 2000.0L
+#define MAX_Z 1000.0L
 
 #define MAX_RADIOUS 10.0L
 
@@ -73,16 +73,71 @@ typedef struct {
 } PlanetsThreadData;
 
 pthread_barrier_t end_barrier;
-
-pthread_cond_t  calced_collisions       = PTHREAD_COND_INITIALIZER;
-pthread_mutex_t calced_collisions_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_barrier_t start_collision_barrier;
+pthread_barrier_t collision_barrier;
+pthread_barrier_t updated_ref_barrier;
 
 void* planets_thread(void* arg) {
     PlanetsThreadData data = *(PlanetsThreadData*)arg;
     printf("Processing from %d to %d\n", data.from, data.to);
-
-    // Gravity
+    // Collisions
     while(true) {
+        pthread_barrier_wait(&start_collision_barrier);
+        for (size_t index = data.from; index < data.to; ++index) {
+            if (!working_planets[index].active) continue;
+            Planet* planet = &working_planets[index];
+
+            for (size_t other_index = 0; other_index < PLANET_COUNT; ++other_index) {
+                Planet* other_planet = &ref_planets[other_index];
+
+                if (other_index == index) continue;
+                if (!other_planet->active) continue;
+                
+                Vec3 difference = vec3_sub(other_planet->position, planet->position);
+
+                val_t square_distance = difference.x * difference.x
+                                      + difference.y * difference.y
+                                      + difference.z * difference.z;
+
+                val_t radious_sum = planet->radious + other_planet->radious;
+
+                bool planets_collided = square_distance < (radious_sum*radious_sum);
+                //if (planets_collided) printf("collided\n");
+                //if (!planets_collided) printf("didn't collide\n");
+                if (planets_collided) {
+                    val_t wsum = planet->mass + other_planet->mass;
+                    val_t weight1 = planet->mass / wsum;
+                    val_t weight2 = other_planet->mass / wsum;
+
+                    if (index > other_index) {
+                        planet->active = false;
+                    } else {
+                    
+                        planet->mass += other_planet->mass;
+
+                        vec3_mult_by_s(&planet->color, weight1);
+                        vec3_add_to(&planet->color, vec3_mult_s(other_planet->color, weight2));
+
+                        vec3_mult_by_s(&planet->color, 1/vec3_max(planet->color));
+
+                        vec3_mult_by_s(&planet->position, weight1);
+                        vec3_add_to(&planet->position, vec3_mult_s(other_planet->position, weight2));
+
+                        vec3_mult_by_s(&planet->velocity, weight1);
+                        vec3_add_to(&planet->velocity, vec3_mult_s(other_planet->velocity, weight2));
+
+                        planet->radious = max(planet->radious, other_planet->radious);
+                    }
+                }
+            }
+        }
+
+        //printf("waiting on collisions, thread from %d to %d\n", data.from, data.to);
+        pthread_barrier_wait(&collision_barrier);
+        //printf("beggining loop, thread from %d to %d\n", data.from, data.to);
+
+        pthread_barrier_wait(&updated_ref_barrier);
+        // Gravity
         for (size_t index = data.from; index < data.to; ++index) {
             if (!working_planets[index].active) continue;
             Planet* planet = &working_planets[index];
@@ -118,10 +173,10 @@ void* planets_thread(void* arg) {
             vec3_add_to(&working_planets[index].velocity, acceleration);
             vec3_add_to(&working_planets[index].position, vec3_mult_s(working_planets[index].velocity, (val_t)dt));
         }
+
+        //printf("finished gravity, waiting on barrier, thread from %d to %d\n", data.from, data.to);
         pthread_barrier_wait(&end_barrier);
-        pthread_mutex_lock(&calced_collisions_mutex);
-            pthread_cond_wait(&calced_collisions, &calced_collisions_mutex);
-        pthread_mutex_unlock(&calced_collisions_mutex);
+        //printf("ending loop, thread from %d to %d \n", data.from, data.to);
     }
     return NULL;
 }
@@ -171,16 +226,19 @@ int main() {
     CAD obj = cad_clone(near_base_planet);
     
     // Threading
-    pthread_barrier_init(&end_barrier, NULL, CORE_N+1);
+    pthread_barrier_init(&end_barrier, NULL, CORE_N);
+    pthread_barrier_init(&collision_barrier, NULL, CORE_N+1);
+    pthread_barrier_init(&start_collision_barrier, NULL, CORE_N+1);
+    pthread_barrier_init(&updated_ref_barrier, NULL, CORE_N+1);
 
-    int step      = (PLANET_COUNT/CORE_N);
+    int step      = (PLANET_COUNT/(CORE_N));
     int remainder = (PLANET_COUNT%CORE_N);
 
     for (int i = 0; i < CORE_N; ++i) {
         PlanetsThreadData* data = malloc(sizeof(PlanetsThreadData));
         data->from = i * step;
         if (i == CORE_N-1 && remainder != 0) {
-            data->to = data->from + remainder;
+            data->to = data->from + step + remainder;
         } else {
             data->to = data->from + step;
         } 
@@ -211,6 +269,7 @@ int main() {
 
     RGFW_window_mouseHold(win, RGFW_AREA(win->r.w / 2, win->r.h / 2));    
     while (RGFW_window_shouldClose(win) == 0) {
+        //puts("--------");
         while (RGFW_window_checkEvent(win)) {
             if (win->event.type == RGFW_quit) goto close_and_return;
 
@@ -288,99 +347,16 @@ int main() {
         glRotatef(yaw  , 0.0, 1.0, 0.0); 
         glTranslatef(camX, camY, -camZ);
 
-#if 0  
-        // Gravity
-        for (size_t index = 0; index < PLANET_COUNT; ++index) {
-            if (!working_planets[index].active) continue;
-            Planet* planet = &working_planets[index];
+        memcpy(ref_planets, working_planets, PLANET_COUNT*sizeof(Planet));
+        pthread_barrier_wait(&start_collision_barrier);
 
-            Vec3 total_force = vec3(0, 0, 0);
-
-            for (size_t other_index = 0; other_index < PLANET_COUNT; ++other_index) {
-                Planet* other_planet = &ref_planets[other_index];
-
-                if (other_index == index) continue;
-                if (!other_planet->active) continue;
-
-                Vec3 difference = vec3_sub(other_planet->position, planet->position);
-
-                val_t square_distance = difference.x * difference.x
-                                      + difference.y * difference.y
-                                      + difference.z * difference.z;
-
-                val_t distance = sqrt(square_distance);
-                val_t magnitude = G * (planet->mass * other_planet->mass) / square_distance;
-
-                Vec3 gravitational_force = vec3(magnitude * (difference.x / distance),
-                                                magnitude * (difference.y / distance),
-                                                magnitude * (difference.z / distance));
-
-                vec3_add_to(&total_force, gravitational_force);
-            }
-
-            vec3_div_by_s(&total_force, PLANET_COUNT);
-
-            Vec3 acceleration = vec3_div_s(total_force, working_planets[index].mass);
-            vec3_mult_by_s(&acceleration, (val_t)dt);
-            vec3_add_to(&working_planets[index].velocity, acceleration);
-            vec3_add_to(&working_planets[index].position, vec3_mult_s(working_planets[index].velocity, (val_t)dt));
-        }
-#endif 
-        
-        pthread_barrier_wait(&end_barrier);
-
-        // Collisions
-        for (size_t index = 0; index < PLANET_COUNT; ++index) {
-            if (!working_planets[index].active) continue;
-            Planet* planet = &working_planets[index];
-
-            for (size_t other_index = 0; other_index < PLANET_COUNT; ++other_index) {
-                Planet* other_planet = &working_planets[other_index];
-
-                if (other_index == index) continue;
-                if (!other_planet->active) continue;
-                
-                Vec3 difference = vec3_sub(other_planet->position, planet->position);
-
-                val_t square_distance = difference.x * difference.x
-                                      + difference.y * difference.y
-                                      + difference.z * difference.z;
-
-                val_t radious_sum = planet->radious + other_planet->radious;
-
-                bool planets_collided = square_distance < (radious_sum*radious_sum);
-                //if (planets_collided) printf("collided\n");
-                //if (!planets_collided) printf("didn't collide\n");
-                if (planets_collided) {
-                    val_t wsum = planet->mass + other_planet->mass;
-                    val_t weight1 = planet->mass / wsum;
-                    val_t weight2 = other_planet->mass / wsum;
-                    
-                    other_planet->active = false;
-                    planet->mass += other_planet->mass;
-
-                    vec3_mult_by_s(&planet->color, weight1);
-                    vec3_add_to(&planet->color, vec3_mult_s(other_planet->color, weight2));
-
-                    vec3_mult_by_s(&planet->color, 1/vec3_max(planet->color));
-
-                    vec3_mult_by_s(&planet->position, weight1);
-                    vec3_add_to(&planet->position, vec3_mult_s(other_planet->position, weight2));
-
-                    vec3_mult_by_s(&planet->velocity, weight1);
-                    vec3_add_to(&planet->velocity, vec3_mult_s(other_planet->velocity, weight2));
-
-                    planet->radious = max(planet->radious, other_planet->radious);
-                    continue;
-                }
-            }
-        }
+        //puts("Handling collisions");
+        pthread_barrier_wait(&collision_barrier);
 
         memcpy(ref_planets, working_planets, PLANET_COUNT*sizeof(Planet));
 
-        pthread_mutex_lock(&calced_collisions_mutex);
-            pthread_cond_broadcast(&calced_collisions);
-        pthread_mutex_unlock(&calced_collisions_mutex);
+        pthread_barrier_wait(&updated_ref_barrier);
+
 
 
         glViewport(0, 0, win->r.w, win->r.h);
@@ -433,6 +409,8 @@ int main() {
 
 
         fps = RGFW_window_checkFPS(win, 60);
+        printf("\033[K");
+        printf("FPS: %Lf\n", fps);
         if (fps > 0) dt = (1/fps) * time_warping; 
     }
 
