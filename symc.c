@@ -5,6 +5,7 @@
 #include <pthread.h>
 
 typedef float val_t;
+#define VAL_FMT "f"
 #define CADIGO_CUSTOM_TYPE
 #define CADIGO_IMPLEMENTATION
 #include "../cadigo/src/cadigo.h"
