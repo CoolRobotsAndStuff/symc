@@ -413,7 +413,7 @@ int main() {
 
         fps = RGFW_window_checkFPS(win, 60);
         //printf("\033[K");
-        printf("FPS: %f\n", fps);
+        //printf("FPS: %f\n", fps);
         if (fps > 0) dt = (1/fps) * time_warping; 
     }
 
