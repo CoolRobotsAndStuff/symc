@@ -28,7 +28,7 @@ static inline void cad_viz_glPerspective(double fovY, double aspect, double zNea
     glMultMatrixf(projectionMatrix);
 }
 
-#define CORE_N 6
+#define CORE_N 4
 #define FAR_PLANET_RES 1
 #define NEAR_PLANET_RES 2
 #define LOD_LIMIT 800
